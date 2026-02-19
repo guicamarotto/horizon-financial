@@ -4,6 +4,7 @@ using BuildingBlocks.Messaging.Headers;
 using BuildingBlocks.Messaging.Kafka;
 using BuildingBlocks.Messaging.Resilience;
 using BuildingBlocks.Observability.Telemetry;
+using BuildingBlocks.Persistence.Flow;
 using Dapper;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -21,16 +22,19 @@ public sealed class OutboxPublisherWorker : BackgroundService
     private readonly IKafkaPublisher _kafkaPublisher;
     private readonly NpgsqlDataSource _dataSource;
     private readonly ResilienceOptions _resilienceOptions;
+    private readonly IFlowEventStore _flowEventStore;
 
     public OutboxPublisherWorker(
         ILogger<OutboxPublisherWorker> logger,
         IKafkaPublisher kafkaPublisher,
         NpgsqlDataSource dataSource,
+        IFlowEventStore flowEventStore,
         IOptions<ResilienceOptions> resilienceOptions)
     {
         _logger = logger;
         _kafkaPublisher = kafkaPublisher;
         _dataSource = dataSource;
+        _flowEventStore = flowEventStore;
         _resilienceOptions = resilienceOptions.Value;
     }
 
@@ -107,6 +111,17 @@ public sealed class OutboxPublisherWorker : BackgroundService
                 cancellationToken);
 
             await MarkAsPublishedAsync(message.Id, cancellationToken);
+
+            await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+                headers.OrderId == Guid.Empty ? message.AggregateId : headers.OrderId,
+                headers.CorrelationId,
+                "Outbox.Publisher",
+                "OUTBOX_PUBLISHED_KAFKA",
+                Broker: "KAFKA",
+                Channel: topic,
+                MessageId: headers.MessageId,
+                PayloadSnippet: message.Payload), cancellationToken);
+
             LabTelemetry.ProcessedCounter.Add(1, KeyValuePair.Create<string, object?>("service", "Outbox.Publisher"));
         }
         catch (Exception exception)

@@ -6,6 +6,9 @@ RUN dotnet publish src/Notification.Worker/Notification.Worker.csproj -c Release
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/publish .
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "Notification.Worker.dll"]

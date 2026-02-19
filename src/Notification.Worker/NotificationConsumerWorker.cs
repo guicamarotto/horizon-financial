@@ -5,6 +5,7 @@ using BuildingBlocks.Messaging.Kafka;
 using BuildingBlocks.Messaging.Options;
 using BuildingBlocks.Messaging.Resilience;
 using BuildingBlocks.Observability.Telemetry;
+using BuildingBlocks.Persistence.Flow;
 using BuildingBlocks.Persistence.Stores;
 using Confluent.Kafka;
 using Dapper;
@@ -20,6 +21,7 @@ public sealed class NotificationConsumerWorker : BackgroundService
     private readonly ILogger<NotificationConsumerWorker> _logger;
     private readonly IKafkaPublisher _kafkaPublisher;
     private readonly IProcessedMessageStore _processedMessageStore;
+    private readonly IFlowEventStore _flowEventStore;
     private readonly NpgsqlDataSource _dataSource;
     private readonly ResilienceOptions _resilienceOptions;
     private readonly KafkaOptions _kafkaOptions;
@@ -29,6 +31,7 @@ public sealed class NotificationConsumerWorker : BackgroundService
         ILogger<NotificationConsumerWorker> logger,
         IKafkaPublisher kafkaPublisher,
         IProcessedMessageStore processedMessageStore,
+        IFlowEventStore flowEventStore,
         NpgsqlDataSource dataSource,
         IOptions<ResilienceOptions> resilienceOptions,
         IOptions<KafkaOptions> kafkaOptions,
@@ -37,6 +40,7 @@ public sealed class NotificationConsumerWorker : BackgroundService
         _logger = logger;
         _kafkaPublisher = kafkaPublisher;
         _processedMessageStore = processedMessageStore;
+        _flowEventStore = flowEventStore;
         _dataSource = dataSource;
         _resilienceOptions = resilienceOptions.Value;
         _kafkaOptions = kafkaOptions.Value;
@@ -111,6 +115,16 @@ public sealed class NotificationConsumerWorker : BackgroundService
             return;
         }
 
+        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+            OrderId: headers.OrderId == Guid.Empty ? null : headers.OrderId,
+            headers.CorrelationId,
+            "Notification.Worker",
+            "NOTIFICATION_CONSUMED_KAFKA",
+            Broker: "KAFKA",
+            Channel: consumeResult.Topic,
+            MessageId: headers.MessageId,
+            PayloadSnippet: consumeResult.Message.Value), cancellationToken);
+
         if (_notificationOptions.FailOnRejectedEvents && string.Equals(consumeResult.Topic, "limits.rejected", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Forced notification failure for rejected events.");
@@ -145,6 +159,15 @@ public sealed class NotificationConsumerWorker : BackgroundService
             },
             cancellationToken: cancellationToken));
 
+        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+            OrderId: orderId == Guid.Empty ? null : orderId,
+            headers.CorrelationId,
+            "Notification.Worker",
+            "NOTIFICATION_PERSISTED",
+            Broker: "NONE",
+            Channel: "notifications.notifications",
+            MessageId: headers.MessageId), cancellationToken);
+
         LabTelemetry.ProcessedCounter.Add(1, KeyValuePair.Create<string, object?>("service", "Notification.Worker"));
     }
 
@@ -169,6 +192,17 @@ public sealed class NotificationConsumerWorker : BackgroundService
             causationId: incomingHeaders.MessageId.ToString("D"));
 
         await _kafkaPublisher.PublishAsync("orders.dlq", JsonSerializer.Serialize(deadLetter, JsonOptions), dlqHeaders, cancellationToken);
+
+        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+            OrderId: incomingHeaders.OrderId == Guid.Empty ? null : incomingHeaders.OrderId,
+            incomingHeaders.CorrelationId,
+            "Notification.Worker",
+            "DLQ_KAFKA_SENT",
+            Broker: "KAFKA",
+            Channel: "orders.dlq",
+            MessageId: incomingHeaders.MessageId,
+            PayloadSnippet: exception.Message), cancellationToken);
+
         LabTelemetry.DlqCounter.Add(1, KeyValuePair.Create<string, object?>("service", "Notification.Worker"));
     }
 }

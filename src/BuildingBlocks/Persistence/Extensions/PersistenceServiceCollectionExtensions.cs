@@ -1,3 +1,4 @@
+using BuildingBlocks.Persistence.Flow;
 using BuildingBlocks.Persistence.Stores;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,6 +15,7 @@ public static class PersistenceServiceCollectionExtensions
 
         services.AddSingleton(new NpgsqlDataSourceBuilder(connectionString).Build());
         services.AddSingleton<IProcessedMessageStore, ProcessedMessageStore>();
+        services.AddSingleton<IFlowEventStore, FlowEventStore>();
 
         return services;
     }

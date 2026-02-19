@@ -39,6 +39,24 @@ CREATE TABLE IF NOT EXISTS integration.processed_messages (
     PRIMARY KEY (consumer_name, message_id)
 );
 
+CREATE TABLE IF NOT EXISTS integration.flow_events (
+    id UUID PRIMARY KEY,
+    order_id UUID NULL,
+    correlation_id TEXT NOT NULL,
+    service TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    broker TEXT NULL,
+    channel TEXT NULL,
+    message_id UUID NULL,
+    payload_snippet TEXT NULL,
+    metadata JSONB NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_events_order_created ON integration.flow_events (order_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_flow_events_correlation_created ON integration.flow_events (correlation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_flow_events_stage_created_desc ON integration.flow_events (stage, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS limits.account_limits (
     account_id UUID PRIMARY KEY,
     reserved_amount NUMERIC(18, 6) NOT NULL DEFAULT 0,

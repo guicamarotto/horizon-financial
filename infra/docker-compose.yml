@@ -162,6 +162,9 @@ services:
     environment:
       ASPNETCORE_URLS: http://+:8080
       ASPNETCORE_ENVIRONMENT: Production
+      Resilience__MaxAttempts: 3
+      Resilience__BaseDelayMs: 400
+      Resilience__MaxJitterMs: 120
     ports:
       - "8083:8080"
     depends_on:

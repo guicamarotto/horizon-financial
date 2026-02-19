@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab E2E - Kafka + RabbitMQ</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/lab/styles.css">
+</head>
+<body>
+  <div class="page-bg"></div>
+  <main class="layout">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Event-Driven Finance Lab</p>
+        <h1>Observabilidade E2E</h1>
+        <p class="subtitle">Acompanhe em tempo quase real o caminho da ordem: API, Outbox, Kafka, RabbitMQ, workers e DLQ.</p>
+      </div>
+      <div class="hero-actions">
+        <button id="run-once-btn" class="btn btn-primary">Rodar 1x</button>
+        <button id="run-ten-btn" class="btn btn-ghost">Rodar 10x</button>
+        <button id="run-fail-btn" class="btn btn-danger">Rodar Falhas</button>
+      </div>
+    </header>
+
+    <section class="panel smoke-panel">
+      <h2>Nova execucao demo</h2>
+      <div class="grid">
+        <label>Conta
+          <input id="account-id" type="text" placeholder="UUID opcional">
+        </label>
+        <label>Ativo
+          <input id="symbol" type="text" value="PETR4">
+        </label>
+        <label>Lado
+          <select id="side">
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </select>
+        </label>
+        <label>Quantidade
+          <input id="quantity" type="number" min="1" step="1" value="100">
+        </label>
+        <label>Preco
+          <input id="price" type="number" min="0.01" step="0.01" value="32.15">
+        </label>
+      </div>
+      <p id="smoke-result" class="muted">Nenhuma execucao iniciada nesta sessao.</p>
+    </section>
+
+    <section class="columns">
+      <aside class="panel">
+        <div class="section-header">
+          <h2>Ordens recentes</h2>
+          <button id="refresh-recent-btn" class="btn btn-ghost">Atualizar</button>
+        </div>
+        <ul id="recent-orders" class="orders-list"></ul>
+      </aside>
+
+      <section class="panel main-panel">
+        <div class="section-header">
+          <h2>Pipeline da ordem</h2>
+          <div id="selected-order" class="selected-order">Nenhuma ordem selecionada</div>
+        </div>
+        <div id="pipeline" class="pipeline"></div>
+
+        <div class="section-header timeline-header">
+          <h2>Timeline detalhada</h2>
+          <span id="timeline-count" class="muted">0 eventos</span>
+        </div>
+        <ul id="timeline" class="timeline"></ul>
+      </section>
+
+      <aside class="panel">
+        <div class="section-header">
+          <h2>Em execucao</h2>
+        </div>
+        <div class="dlq-counters">
+          <article>
+            <h3>Rabbit (fila)</h3>
+            <p id="rabbit-inflight-count" class="counter">0</p>
+            <small>Fila: limits.reserve</small>
+          </article>
+          <article>
+            <h3>Kafka (lag)</h3>
+            <p id="kafka-inflight-count" class="counter">0</p>
+            <small>orders.created + limits.*</small>
+          </article>
+        </div>
+
+        <h3 class="mt">DLQ</h3>
+        <div class="section-header">
+          <h2>Fila de erros</h2>
+          <button id="refresh-dlq-btn" class="btn btn-ghost">Atualizar</button>
+        </div>
+        <div class="dlq-counters">
+          <article>
+            <h3>Rabbit</h3>
+            <p id="rabbit-count" class="counter">0</p>
+            <small>Fila: limits.reserve.dlq</small>
+          </article>
+          <article>
+            <h3>Kafka</h3>
+            <p id="kafka-count" class="counter">0</p>
+            <small>Topico: orders.dlq</small>
+          </article>
+        </div>
+        <div class="dlq-actions">
+          <button id="replay-rabbit-btn" class="btn btn-warning">Replay Rabbit DLQ</button>
+          <button id="replay-kafka-btn" class="btn btn-warning">Replay Kafka DLQ</button>
+        </div>
+        <h3 class="mt">Ultimas falhas</h3>
+        <ul id="latest-failures" class="timeline compact"></ul>
+      </aside>
+    </section>
+  </main>
+
+  <script src="/lab/app.js"></script>
+</body>
+</html>

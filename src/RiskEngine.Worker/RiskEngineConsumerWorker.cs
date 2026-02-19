@@ -6,6 +6,7 @@ using BuildingBlocks.Messaging.Options;
 using BuildingBlocks.Messaging.Rabbit;
 using BuildingBlocks.Messaging.Resilience;
 using BuildingBlocks.Observability.Telemetry;
+using BuildingBlocks.Persistence.Flow;
 using BuildingBlocks.Persistence.Stores;
 using Confluent.Kafka;
 using Dapper;
@@ -22,6 +23,7 @@ public sealed class RiskEngineConsumerWorker : BackgroundService
     private readonly IKafkaPublisher _kafkaPublisher;
     private readonly IRabbitPublisher _rabbitPublisher;
     private readonly IProcessedMessageStore _processedMessageStore;
+    private readonly IFlowEventStore _flowEventStore;
     private readonly NpgsqlDataSource _dataSource;
     private readonly RiskEvaluator _riskEvaluator;
     private readonly ResilienceOptions _resilienceOptions;
@@ -32,6 +34,7 @@ public sealed class RiskEngineConsumerWorker : BackgroundService
         IKafkaPublisher kafkaPublisher,
         IRabbitPublisher rabbitPublisher,
         IProcessedMessageStore processedMessageStore,
+        IFlowEventStore flowEventStore,
         NpgsqlDataSource dataSource,
         RiskEvaluator riskEvaluator,
         IOptions<ResilienceOptions> resilienceOptions,
@@ -41,6 +44,7 @@ public sealed class RiskEngineConsumerWorker : BackgroundService
         _kafkaPublisher = kafkaPublisher;
         _rabbitPublisher = rabbitPublisher;
         _processedMessageStore = processedMessageStore;
+        _flowEventStore = flowEventStore;
         _dataSource = dataSource;
         _riskEvaluator = riskEvaluator;
         _resilienceOptions = resilienceOptions.Value;
@@ -127,6 +131,16 @@ public sealed class RiskEngineConsumerWorker : BackgroundService
 
         var riskResult = _riskEvaluator.Evaluate(createdEvent, DateTimeOffset.UtcNow);
 
+        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+            createdEvent.OrderId,
+            normalizedHeaders.CorrelationId,
+            "RiskEngine.Worker",
+            "RISK_CONSUMED_KAFKA",
+            Broker: "KAFKA",
+            Channel: "orders.created",
+            MessageId: normalizedHeaders.MessageId,
+            PayloadSnippet: consumeResult.Message.Value), cancellationToken);
+
         if (!riskResult.Approved)
         {
             var rejectedEvent = new LimitRejectedV1(
@@ -144,6 +158,18 @@ public sealed class RiskEngineConsumerWorker : BackgroundService
 
             await _kafkaPublisher.PublishAsync("limits.rejected", JsonSerializer.Serialize(rejectedEvent, JsonOptions), rejectedHeaders, cancellationToken);
             await UpdateOrderStatusAsync(createdEvent.OrderId, "REJECTED", cancellationToken);
+
+            await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+                createdEvent.OrderId,
+                normalizedHeaders.CorrelationId,
+                "RiskEngine.Worker",
+                "RISK_REJECTED",
+                Broker: "NONE",
+                Channel: null,
+                MessageId: normalizedHeaders.MessageId,
+                PayloadSnippet: riskResult.Reason,
+                Metadata: new { riskResult.Reason }), cancellationToken);
+
             LabTelemetry.ProcessedCounter.Add(1, KeyValuePair.Create<string, object?>("service", "RiskEngine.Worker"));
             return;
         }
@@ -173,6 +199,25 @@ public sealed class RiskEngineConsumerWorker : BackgroundService
             cancellationToken: cancellationToken);
 
         await UpdateOrderStatusAsync(createdEvent.OrderId, "RISK_APPROVED", cancellationToken);
+
+        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+            createdEvent.OrderId,
+            normalizedHeaders.CorrelationId,
+            "RiskEngine.Worker",
+            "RISK_APPROVED",
+            Broker: "NONE",
+            Channel: null,
+            MessageId: normalizedHeaders.MessageId), cancellationToken);
+
+        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+            createdEvent.OrderId,
+            normalizedHeaders.CorrelationId,
+            "RiskEngine.Worker",
+            "COMMAND_PUBLISHED_RABBIT",
+            Broker: "RABBITMQ",
+            Channel: "limits.commands:limit.reserve",
+            MessageId: commandHeaders.MessageId,
+            PayloadSnippet: JsonSerializer.Serialize(reserveCommand, JsonOptions)), cancellationToken);
 
         LabTelemetry.ProcessedCounter.Add(1, KeyValuePair.Create<string, object?>("service", "RiskEngine.Worker"));
     }
@@ -211,6 +256,17 @@ public sealed class RiskEngineConsumerWorker : BackgroundService
             causationId: incomingHeaders.MessageId.ToString("D"));
 
         await _kafkaPublisher.PublishAsync("orders.dlq", JsonSerializer.Serialize(dlqEvent, JsonOptions), dlqHeaders, cancellationToken);
+
+        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+            incomingHeaders.OrderId == Guid.Empty ? null : incomingHeaders.OrderId,
+            incomingHeaders.CorrelationId,
+            "RiskEngine.Worker",
+            "DLQ_KAFKA_SENT",
+            Broker: "KAFKA",
+            Channel: "orders.dlq",
+            MessageId: incomingHeaders.MessageId,
+            PayloadSnippet: exception.Message), cancellationToken);
+
         LabTelemetry.DlqCounter.Add(1, KeyValuePair.Create<string, object?>("service", "RiskEngine.Worker"));
     }
 }

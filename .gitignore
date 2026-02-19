@@ -33,5 +33,5 @@ Thumbs.db
 # Env
 .env
 
-# Local planning docs
-PRD.md
+# Local private docs
+docs-local/

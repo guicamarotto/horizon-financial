@@ -6,6 +6,7 @@ using BuildingBlocks.Messaging.Kafka;
 using BuildingBlocks.Messaging.Rabbit;
 using BuildingBlocks.Messaging.Resilience;
 using BuildingBlocks.Observability.Telemetry;
+using BuildingBlocks.Persistence.Flow;
 using BuildingBlocks.Persistence.Stores;
 using Dapper;
 using LimitService.Worker.Limits;
@@ -29,6 +30,7 @@ public sealed class LimitServiceConsumerWorker : BackgroundService
     private readonly IRabbitConnectionProvider _rabbitConnectionProvider;
     private readonly IKafkaPublisher _kafkaPublisher;
     private readonly IProcessedMessageStore _processedMessageStore;
+    private readonly IFlowEventStore _flowEventStore;
     private readonly NpgsqlDataSource _dataSource;
     private readonly ResilienceOptions _resilienceOptions;
     private readonly LimitRulesOptions _limitRules;
@@ -38,6 +40,7 @@ public sealed class LimitServiceConsumerWorker : BackgroundService
         IRabbitConnectionProvider rabbitConnectionProvider,
         IKafkaPublisher kafkaPublisher,
         IProcessedMessageStore processedMessageStore,
+        IFlowEventStore flowEventStore,
         NpgsqlDataSource dataSource,
         IOptions<ResilienceOptions> resilienceOptions,
         IOptions<LimitRulesOptions> limitRules)
@@ -46,6 +49,7 @@ public sealed class LimitServiceConsumerWorker : BackgroundService
         _rabbitConnectionProvider = rabbitConnectionProvider;
         _kafkaPublisher = kafkaPublisher;
         _processedMessageStore = processedMessageStore;
+        _flowEventStore = flowEventStore;
         _dataSource = dataSource;
         _resilienceOptions = resilienceOptions.Value;
         _limitRules = limitRules.Value;
@@ -93,6 +97,7 @@ public sealed class LimitServiceConsumerWorker : BackgroundService
                     catch (Exception exception)
                     {
                         _logger.LogError(exception, "Error processing limit command. Sending to DLQ.");
+                        var failedHeaders = MessageHeaderConverter.FromRabbitHeaders(result.BasicProperties);
 
                         var properties = channel.CreateBasicProperties();
                         properties.Persistent = true;
@@ -103,6 +108,16 @@ public sealed class LimitServiceConsumerWorker : BackgroundService
 
                         channel.BasicPublish(DlqExchange, DlqRoutingKey, mandatory: false, basicProperties: properties, body: result.Body);
                         channel.BasicAck(result.DeliveryTag, multiple: false);
+
+                        await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+                            failedHeaders.OrderId == Guid.Empty ? null : failedHeaders.OrderId,
+                            failedHeaders.CorrelationId,
+                            "LimitService.Worker",
+                            "DLQ_RABBIT_SENT",
+                            Broker: "RABBITMQ",
+                            Channel: DlqQueue,
+                            MessageId: failedHeaders.MessageId,
+                            PayloadSnippet: exception.Message), stoppingToken);
 
                         LabTelemetry.DlqCounter.Add(1, KeyValuePair.Create<string, object?>("service", "LimitService.Worker"));
                     }
@@ -156,50 +171,91 @@ public sealed class LimitServiceConsumerWorker : BackgroundService
             return;
         }
 
-        if (_limitRules.FailSymbols.Any(symbol => string.Equals(symbol, command.Symbol, StringComparison.OrdinalIgnoreCase)))
+        try
         {
-            throw new InvalidOperationException($"Forced failure for symbol {command.Symbol}.");
-        }
+            await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+                command.OrderId,
+                normalizedHeaders.CorrelationId,
+                "LimitService.Worker",
+                "LIMIT_CONSUMED_RABBIT",
+                Broker: "RABBITMQ",
+                Channel: Queue,
+                MessageId: normalizedHeaders.MessageId,
+                PayloadSnippet: payload), cancellationToken);
 
-        var reserveResult = await TryReserveLimitAsync(command.AccountId, command.Notional, cancellationToken);
+            if (_limitRules.FailSymbols.Any(symbol => string.Equals(symbol, command.Symbol, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException($"Forced failure for symbol {command.Symbol}.");
+            }
 
-        if (reserveResult.Approved)
-        {
-            var reservedEvent = new LimitReservedV1(
+            var reserveResult = await TryReserveLimitAsync(command.AccountId, command.Notional, cancellationToken);
+
+            if (reserveResult.Approved)
+            {
+                var reservedEvent = new LimitReservedV1(
+                    command.OrderId,
+                    command.AccountId,
+                    reserveResult.ReservedAmount,
+                    DateTimeOffset.UtcNow);
+
+                var reservedHeaders = MessageHeaders.Create(
+                    command.OrderId,
+                    nameof(LimitReservedV1),
+                    "v1",
+                    normalizedHeaders.CorrelationId,
+                    causationId: normalizedHeaders.MessageId.ToString("D"));
+
+                await _kafkaPublisher.PublishAsync("limits.reserved", JsonSerializer.Serialize(reservedEvent, JsonOptions), reservedHeaders, cancellationToken);
+                await UpdateOrderStatusAsync(command.OrderId, "LIMIT_RESERVED", cancellationToken);
+
+                await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+                    command.OrderId,
+                    normalizedHeaders.CorrelationId,
+                    "LimitService.Worker",
+                    "LIMIT_RESERVED_PUBLISHED_KAFKA",
+                    Broker: "KAFKA",
+                    Channel: "limits.reserved",
+                    MessageId: reservedHeaders.MessageId,
+                    PayloadSnippet: JsonSerializer.Serialize(reservedEvent, JsonOptions)), cancellationToken);
+
+                LabTelemetry.ProcessedCounter.Add(1, KeyValuePair.Create<string, object?>("service", "LimitService.Worker"));
+                return;
+            }
+
+            var rejectedEvent = new LimitRejectedV1(
                 command.OrderId,
                 command.AccountId,
-                reserveResult.ReservedAmount,
+                reserveResult.Reason,
                 DateTimeOffset.UtcNow);
 
-            var reservedHeaders = MessageHeaders.Create(
+            var rejectedHeaders = MessageHeaders.Create(
                 command.OrderId,
-                nameof(LimitReservedV1),
+                nameof(LimitRejectedV1),
                 "v1",
                 normalizedHeaders.CorrelationId,
                 causationId: normalizedHeaders.MessageId.ToString("D"));
 
-            await _kafkaPublisher.PublishAsync("limits.reserved", JsonSerializer.Serialize(reservedEvent, JsonOptions), reservedHeaders, cancellationToken);
-            await UpdateOrderStatusAsync(command.OrderId, "LIMIT_RESERVED", cancellationToken);
+            await _kafkaPublisher.PublishAsync("limits.rejected", JsonSerializer.Serialize(rejectedEvent, JsonOptions), rejectedHeaders, cancellationToken);
+            await UpdateOrderStatusAsync(command.OrderId, "REJECTED", cancellationToken);
+
+            await _flowEventStore.AppendAsync(new FlowEventAppendRequest(
+                command.OrderId,
+                normalizedHeaders.CorrelationId,
+                "LimitService.Worker",
+                "LIMIT_REJECTED_PUBLISHED_KAFKA",
+                Broker: "KAFKA",
+                Channel: "limits.rejected",
+                MessageId: rejectedHeaders.MessageId,
+                PayloadSnippet: JsonSerializer.Serialize(rejectedEvent, JsonOptions)), cancellationToken);
+
             LabTelemetry.ProcessedCounter.Add(1, KeyValuePair.Create<string, object?>("service", "LimitService.Worker"));
-            return;
         }
-
-        var rejectedEvent = new LimitRejectedV1(
-            command.OrderId,
-            command.AccountId,
-            reserveResult.Reason,
-            DateTimeOffset.UtcNow);
-
-        var rejectedHeaders = MessageHeaders.Create(
-            command.OrderId,
-            nameof(LimitRejectedV1),
-            "v1",
-            normalizedHeaders.CorrelationId,
-            causationId: normalizedHeaders.MessageId.ToString("D"));
-
-        await _kafkaPublisher.PublishAsync("limits.rejected", JsonSerializer.Serialize(rejectedEvent, JsonOptions), rejectedHeaders, cancellationToken);
-        await UpdateOrderStatusAsync(command.OrderId, "REJECTED", cancellationToken);
-        LabTelemetry.ProcessedCounter.Add(1, KeyValuePair.Create<string, object?>("service", "LimitService.Worker"));
+        catch
+        {
+            // Allow retries for the same in-flight message; dedupe remains for successfully processed messages.
+            await _processedMessageStore.UnmarkProcessedAsync(ConsumerName, normalizedHeaders.MessageId, cancellationToken);
+            throw;
+        }
     }
 
     private async Task<(bool Approved, decimal ReservedAmount, string Reason)> TryReserveLimitAsync(Guid accountId, decimal requestedNotional, CancellationToken cancellationToken)
