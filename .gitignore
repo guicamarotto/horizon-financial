@@ -1,0 +1,37 @@
+# Build
+bin/
+obj/
+out/
+
+# User-specific
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider/VSCode/VS
+.idea/
+.vscode/
+.vs/
+
+# NuGet
+*.nupkg
+.nuget/
+
+# Logs
+*.log
+
+# Coverage/Test Results
+TestResults/
+coverage/
+coverage.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+
+# Local planning docs
+PRD.md

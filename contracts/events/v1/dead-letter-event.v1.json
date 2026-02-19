@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeadLetterEventV1",
+  "type": "object",
+  "required": ["messageId", "source", "targetTopic", "reason", "originalPayload", "originalHeaders", "failedAt"],
+  "properties": {
+    "messageId": { "type": "string", "format": "uuid" },
+    "source": { "type": "string" },
+    "targetTopic": { "type": "string" },
+    "reason": { "type": "string" },
+    "originalPayload": { "type": "string" },
+    "originalHeaders": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "failedAt": { "type": "string", "format": "date-time" }
+  }
+}

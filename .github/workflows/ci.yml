@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore event-driven-finance-lab-dotnet.sln
+
+      - name: Build
+        run: dotnet build event-driven-finance-lab-dotnet.sln --no-restore -c Release
+
+      - name: Test
+        run: dotnet test event-driven-finance-lab-dotnet.sln --no-build -c Release
+
+      - name: Lint/Format
+        run: dotnet format event-driven-finance-lab-dotnet.sln --verify-no-changes
+
+      - name: Docker compose up
+        run: docker compose -f infra/docker-compose.yml up -d --build
+
+      - name: Smoke test
+        run: ./scripts/smoke.sh
+
+      - name: Docker compose logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --no-color --tail=300
+
+      - name: Docker compose down
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v

@@ -1,0 +1,17 @@
+using BuildingBlocks.Messaging.Extensions;
+using BuildingBlocks.Observability.Extensions;
+using BuildingBlocks.Persistence.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddLabDefaults("Outbox.Publisher");
+builder.Services.AddPostgresPersistence(builder.Configuration);
+builder.Services.AddKafkaMessaging(builder.Configuration);
+builder.Services.Configure<BuildingBlocks.Messaging.Resilience.ResilienceOptions>(builder.Configuration.GetSection(BuildingBlocks.Messaging.Resilience.ResilienceOptions.SectionName));
+builder.Services.AddHostedService<OutboxPublisherWorker>();
+
+var app = builder.Build();
+app.MapLabDefaultEndpoints();
+app.MapGet("/", () => Results.Ok(new { service = "Outbox.Publisher", status = "running" }));
+
+app.Run();

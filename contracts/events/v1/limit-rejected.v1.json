@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LimitRejectedV1",
+  "type": "object",
+  "required": ["orderId", "accountId", "reason", "rejectedAt"],
+  "properties": {
+    "orderId": { "type": "string", "format": "uuid" },
+    "accountId": { "type": "string", "format": "uuid" },
+    "reason": { "type": "string" },
+    "rejectedAt": { "type": "string", "format": "date-time" }
+  }
+}

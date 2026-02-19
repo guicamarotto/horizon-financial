@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OrderCreatedV1",
+  "type": "object",
+  "required": ["orderId", "accountId", "symbol", "side", "quantity", "price", "createdAt", "status"],
+  "properties": {
+    "orderId": { "type": "string", "format": "uuid" },
+    "accountId": { "type": "string", "format": "uuid" },
+    "symbol": { "type": "string" },
+    "side": { "type": "string", "enum": ["BUY", "SELL"] },
+    "quantity": { "type": "number" },
+    "price": { "type": "number" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "status": { "type": "string", "const": "PENDING" }
+  }
+}
